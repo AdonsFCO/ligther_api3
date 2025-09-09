@@ -1,23 +1,36 @@
 {
-  "name": "express",
+  "name": "power-monitor-api",
   "version": "1.0.0",
-  "description": "Basic Express.js + Vercel example that serves html content, JSON data and simulates an api route.",
+  "description": "API de monitoreo de apagones con Redis para detección de apagones domésticos",
   "type": "module",
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "vercel-build": "npm run build"
+  },
   "dependencies": {
-    "@types/express": "^5.0.0",
     "express": "^4.18.2",
-    "@upstash/redis": "^1.22.0",
+    "redis": "^4.6.0",
+    "dotenv": "^16.3.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
   },
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "keywords": [
+    "power-monitor",
+    "apagones",
+    "raspberry-pi",
+    "redis",
+    "express",
+    "vercel"
+  ],
+  "author": "Tu Nombre",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AdonsFCO/ligther_api3.git"
@@ -25,5 +38,8 @@
   "bugs": {
     "url": "https://github.com/AdonsFCO/ligther_api3/issues"
   },
-  "homepage": "https://github.com/AdonsFCO/ligther_api3#readme"
+  "homepage": "https://github.com/AdonsFCO/ligther_api3#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
