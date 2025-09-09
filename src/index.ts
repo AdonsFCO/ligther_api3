@@ -1,13 +1,13 @@
 import express, { Request, Response } from 'express';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { writeFile, readFile } from 'fs/promises';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { Redis } from '@upstash/redis';
 
 const app = express();
-const DATA_FILE = 'power-data.json';
+
+// Configura Redis (usa variables de entorno en Vercel)
+const redis = new Redis({
+  url: process.env.REDIS_URL || 'your_redis_url_here',
+  token: process.env.REDIS_TOKEN || 'your_redis_token_here',
+});
 
 interface PowerEvent {
   id: string;
@@ -26,66 +26,10 @@ interface ClientInfo {
   hostname?: string;
 }
 
-interface MonitorData {
-  events: PowerEvent[];
-  clients: { [key: string]: ClientInfo };
-}
-
-let monitorData: MonitorData = {
-  events: [],
-  clients: {}
-};
-
-// Cargar y guardar datos
-async function loadData() {
-  try {
-    const data = await readFile(DATA_FILE, 'utf8');
-    monitorData = JSON.parse(data);
-    console.log('Datos cargados correctamente');
-  } catch (error) {
-    console.log('Creando nuevo archivo de datos');
-    await saveData();
-  }
-}
-
-async function saveData() {
-  try {
-    await writeFile(DATA_FILE, JSON.stringify(monitorData, null, 2));
-  } catch (error) {
-    console.error('Error guardando datos:', error);
-  }
-}
-
-// Verificar clientes desconectados
-function checkDisconnectedClients() {
-  const now = new Date();
-  const FIVE_MINUTES = 5 * 60 * 1000;
-
-  Object.entries(monitorData.clients).forEach(([clientId, client]) => {
-    if (client.status === 'connected') {
-      const lastSeen = new Date(client.lastSeen);
-      if (now.getTime() - lastSeen.getTime() > FIVE_MINUTES) {
-        client.status = 'disconnected';
-        
-        const event: PowerEvent = {
-          id: `event_${Date.now()}`,
-          type: 'disconnection',
-          timestamp: now.toISOString(),
-          clientId: clientId,
-          hostname: client.hostname,
-          details: `Cliente desconectado - ${client.hostname || clientId}`
-        };
-        monitorData.events.push(event);
-        console.log(`⚠️ Cliente desconectado: ${clientId}`);
-      }
-    }
-  });
-}
-
 // Middleware
 app.use(express.json());
 
-// ✅ ENDPOINT HEARTBEAT CORREGIDO (POST)
+// ✅ ENDPOINT HEARTBEAT CON REDIS
 app.post('/api/heartbeat', async (req: Request, res: Response) => {
   try {
     const { clientId, timestamp, bootTime, isReboot, isFirstRun, hostname } = req.body;
@@ -97,55 +41,55 @@ app.post('/api/heartbeat', async (req: Request, res: Response) => {
 
     console.log(`💓 Heartbeat recibido de: ${clientId}`);
 
-    const clientKey = clientId as string;
+    // Obtener datos existentes de Redis
+    const existingClient = await redis.hgetall(`client:${clientId}`);
+    const events = await redis.lrange('events', 0, -1);
 
-    // Verificar reinicio
-    if (isReboot && monitorData.clients[clientKey]) {
-      const event: PowerEvent = {
+    let shouldCreateRebootEvent = false;
+
+    // ✅ Lógica CORREGIDA para detectar reinicios
+    if (existingClient && existingClient.bootTime) {
+      const existingBootTime = new Date(existingClient.bootTime as string);
+      const newBootTime = new Date(bootTime);
+      
+      // Solo es reinicio si el bootTime es diferente Y no es el primer run
+      if (existingBootTime.getTime() !== newBootTime.getTime() && !isFirstRun) {
+        shouldCreateRebootEvent = true;
+        console.log(`🔌 REINICIO REAL DETECTADO: ${clientId}`);
+      }
+    }
+
+    // Crear evento de reinicio si es necesario
+    if (shouldCreateRebootEvent) {
+      const rebootEvent: PowerEvent = {
         id: `event_${Date.now()}`,
         type: 'reboot',
         timestamp: now.toISOString(),
-        clientId: clientKey,
-        hostname: hostname,
-        details: `Reinicio del servidor - ${hostname || clientKey}`
+        clientId,
+        hostname,
+        details: `Reinicio del servidor - ${hostname || clientId}`
       };
-      monitorData.events.push(event);
-      console.log(`🔌 Reinicio detectado: ${clientKey}`);
-    }
-
-    // Verificar reconexión
-    const existingClient = monitorData.clients[clientKey];
-    if (existingClient && existingClient.status === 'disconnected') {
-      const lastSeen = new Date(existingClient.lastSeen);
-      const downtime = Math.floor((now.getTime() - lastSeen.getTime()) / 1000);
       
-      const event: PowerEvent = {
-        id: `event_${Date.now()}`,
-        type: 'reconnection',
-        timestamp: now.toISOString(),
-        duration: downtime,
-        clientId: clientKey,
-        hostname: hostname,
-        details: `Reconexión después de ${downtime} segundos - ${hostname || clientKey}`
-      };
-      monitorData.events.push(event);
-      console.log(`✅ Reconexión: ${clientKey} después de ${downtime}s`);
+      await redis.lpush('events', JSON.stringify(rebootEvent));
+      await redis.ltrim('events', 0, 999); // Mantener solo últimos 1000 eventos
     }
 
-    // Actualizar cliente
-    monitorData.clients[clientKey] = {
+    // Actualizar cliente en Redis
+    await redis.hset(`client:${clientId}`, {
       lastSeen: now.toISOString(),
       bootTime: bootTime || now.toISOString(),
       status: 'connected',
-      hostname: hostname
-    };
+      hostname: hostname || 'unknown'
+    });
 
-    await saveData();
-    
+    // Set expiration para clientes (30 días)
+    await redis.expire(`client:${clientId}`, 2592000);
+
     res.json({ 
       status: 'ok', 
       received: timestamp,
-      message: 'Heartbeat processed successfully'
+      message: 'Heartbeat processed successfully',
+      isReboot: shouldCreateRebootEvent
     });
 
   } catch (error) {
@@ -154,143 +98,52 @@ app.post('/api/heartbeat', async (req: Request, res: Response) => {
   }
 });
 
-// ✅ ENDPOINT STATUS (GET)
-app.get('/api/status', (req: Request, res: Response) => {
-  res.json(monitorData);
+// ✅ ENDPOINT STATUS CON REDIS
+app.get('/api/status', async (req: Request, res: Response) => {
+  try {
+    // Obtener todos los clientes
+    const clientKeys = await redis.keys('client:*');
+    const clients: { [key: string]: ClientInfo } = {};
+    
+    for (const key of clientKeys) {
+      const clientData = await redis.hgetall(key);
+      clients[key.replace('client:', '')] = clientData as unknown as ClientInfo;
+    }
+
+    // Obtener eventos
+    const eventsData = await redis.lrange('events', 0, -1);
+    const events: PowerEvent[] = eventsData.map((event: string) => JSON.parse(event));
+
+    res.json({ events, clients });
+
+  } catch (error) {
+    console.error('Error getting status:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// ✅ ENDPOINT PRINCIPAL - DASHBOARD (GET)
-app.get('/', (req: Request, res: Response) => {
-  const now = new Date();
-  const activeClients = Object.values(monitorData.clients).filter(client => 
-    client.status === 'connected'
-  ).length;
-
-  const totalClients = Object.keys(monitorData.clients).length;
-  const outages = monitorData.events.filter(e => e.type === 'reboot').length;
-  const disconnections = monitorData.events.filter(e => e.type === 'disconnection').length;
-
-  res.type('html').send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Monitor de Apagones</title>
-      <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-      <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #0f172a; color: white; }
-        .dashboard { max-width: 1200px; margin: 0 auto; }
-        .card { background: #1e293b; padding: 20px; margin: 10px; border-radius: 8px; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
-        .stat { text-align: center; padding: 15px; background: #334155; border-radius: 8px; }
-        .stat-number { font-size: 24px; font-weight: bold; }
-        .outage { color: #ef4444; }
-        .reconnection { color: #22c55e; }
-        .disconnection { color: #f59e0b; }
-        .event { padding: 10px; margin: 5px 0; background: #334155; border-radius: 5px; }
-      </style>
-    </head>
-    <body>
-      <div class="dashboard">
-        <h1>⚡ Monitor de Apagones Domésticos</h1>
-        
-        <div class="stats">
-          <div class="stat">
-            <div class="stat-number">${totalClients}</div>
-            <div>Clientes Totales</div>
-          </div>
-          <div class="stat">
-            <div class="stat-number">${activeClients}</div>
-            <div>Clientes Activos</div>
-          </div>
-          <div class="stat">
-            <div class="stat-number outage">${outages}</div>
-            <div>Apagones</div>
-          </div>
-          <div class="stat">
-            <div class="stat-number disconnection">${disconnections}</div>
-            <div>Desconexiones</div>
-          </div>
-        </div>
-
-        <div class="grid">
-          <div class="card">
-            <h2>📊 Estadísticas de Eventos</h2>
-            <canvas id="eventChart" width="400" height="200"></canvas>
-          </div>
-
-          <div class="card">
-            <h2>📋 Últimos Eventos</h2>
-            <div style="max-height: 300px; overflow-y: auto;">
-              ${monitorData.events.slice(-10).reverse().map(event => `
-                <div class="event">
-                  <div><strong>${new Date(event.timestamp).toLocaleString()}</strong></div>
-                  <div class="${event.type}">${event.type.toUpperCase()}</div>
-                  <div>${event.details}</div>
-                </div>
-              `).join('') || '<p>No hay eventos registrados</p>'}
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>🖥️ Clientes Conectados</h2>
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px;">
-            ${Object.entries(monitorData.clients).map(([clientId, client]) => `
-              <div style="background: ${client.status === 'connected' ? '#22c55e20' : '#ef444420'}; 
-                         border: 2px solid ${client.status === 'connected' ? '#22c55e' : '#ef4444'};
-                         padding: 15px; border-radius: 8px;">
-                <div><strong>${client.hostname || clientId}</strong></div>
-                <div>Estado: <span style="color: ${client.status === 'connected' ? '#22c55e' : '#ef4444'}">
-                  ${client.status === 'connected' ? '🟢 Conectado' : '🔴 Desconectado'}
-                </span></div>
-                <div>Última vez: ${new Date(client.lastSeen).toLocaleString()}</div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      </div>
-
-      <script>
-        const eventData = {
-          reboot: ${monitorData.events.filter(e => e.type === 'reboot').length},
-          reconnection: ${monitorData.events.filter(e => e.type === 'reconnection').length},
-          disconnection: ${monitorData.events.filter(e => e.type === 'disconnection').length}
-        };
-
-        new Chart(document.getElementById('eventChart'), {
-          type: 'doughnut',
-          data: {
-            labels: ['Apagones', 'Reconexiones', 'Desconexiones'],
-            datasets: [{
-              data: [eventData.reboot, eventData.reconnection, eventData.disconnection],
-              backgroundColor: ['#ef4444', '#22c55e', '#f59e0b']
-            }]
-          }
-        });
-
-        setTimeout(() => location.reload(), 30000);
-      </script>
-    </body>
-    </html>
-  `);
-});
-
-// ✅ HEALTH CHECK (GET)
-app.get('/health', (req: Request, res: Response) => {
-  res.json({ 
-    status: 'healthy', 
-    timestamp: new Date().toISOString(),
-    clients: Object.keys(monitorData.clients).length,
-    events: monitorData.events.length
-  });
-});
-
-// Inicializar
-loadData().then(() => {
-  console.log('Monitor de apagones iniciado');
-  // Verificar clientes desconectados cada minuto
-  setInterval(checkDisconnectedClients, 60000);
+// ✅ DASHBOARD
+app.get('/', async (req: Request, res: Response) => {
+  try {
+    const status = await fetch(`${req.protocol}://${req.get('host')}/api/status`).then(r => r.json());
+    
+    res.type('html').send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Monitor de Apagones</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+      </head>
+      <body>
+        <h1>⚡ Monitor de Apagones</h1>
+        <p>Clientes: ${Object.keys(status.clients || {}).length}</p>
+        <p>Eventos: ${status.events?.length || 0}</p>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    res.send('Error loading dashboard');
+  }
 });
 
 export default app;
