@@ -2,6 +2,7 @@ import express from 'express'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { writeFile, readFile } from 'fs/promises'
+import { ParsedQs } from 'qs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -9,8 +10,21 @@ const __dirname = path.dirname(__filename)
 const app = express()
 const HEARTBEAT_FILE = 'heartbeats.json'
 
+// Interfaces para TypeScript
+interface ClientData {
+  lastHeartbeat: string;
+  ip: string;
+  userAgent: string;
+  totalHeartbeats: number;
+}
+
+interface HeartbeatsData {
+  clients: { [key: string]: ClientData };
+  lastCheck: string;
+}
+
 // Datos en memoria
-let heartbeatsData = {
+let heartbeatsData: HeartbeatsData = {
   clients: {},
   lastCheck: new Date().toISOString()
 }
@@ -37,14 +51,14 @@ async function saveHeartbeats() {
 }
 
 // Middleware para tracking de heartbeats
-function trackHeartbeat(req, res, next) {
+function trackHeartbeat(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (req.path === '/heartbeat') {
-    const clientId = req.headers['client-id'] || req.ip || 'unknown'
+    const clientId = (req.headers['client-id'] as string) || req.ip || 'unknown'
     const now = new Date()
     
     heartbeatsData.clients[clientId] = {
       lastHeartbeat: now.toISOString(),
-      ip: req.ip,
+      ip: req.ip || 'unknown',
       userAgent: req.get('User-Agent') || 'unknown',
       totalHeartbeats: (heartbeatsData.clients[clientId]?.totalHeartbeats || 0) + 1
     }
@@ -110,12 +124,12 @@ app.get('/heartbeat', (req, res) => {
 // Endpoint para ver estado de heartbeats
 app.get('/heartbeat-status', (req, res) => {
   const now = new Date()
-  const timeoutMinutes = parseInt(req.query.timeout) || 5
+  const timeoutMinutes = parseInt(req.query.timeout as string) || 5
   const cutoffTime = new Date(now.getTime() - timeoutMinutes * 60000)
   
   const clients = Object.entries(heartbeatsData.clients).map(([clientId, data]) => {
     const lastHeartbeat = new Date(data.lastHeartbeat)
-    const minutesSinceLast = Math.floor((now - lastHeartbeat) / 60000)
+    const minutesSinceLast = Math.floor((now.getTime() - lastHeartbeat.getTime()) / 60000)
     
     return {
       clientId,
@@ -148,12 +162,13 @@ app.get('/heartbeat-status', (req, res) => {
 
 // Limpiar clientes antiguos (opcional)
 app.delete('/heartbeat-cleanup', async (req, res) => {
-  const hours = parseInt(req.query.hours) || 24
+  const hours = parseInt(req.query.hours as string) || 24
   const cutoffTime = new Date(Date.now() - hours * 3600000)
   
   let removedCount = 0
   Object.keys(heartbeatsData.clients).forEach(clientId => {
-    const lastHeartbeat = new Date(heartbeatsData.clients[clientId].lastHeartbeat)
+    const clientData = heartbeatsData.clients[clientId]
+    const lastHeartbeat = new Date(clientData.lastHeartbeat)
     if (lastHeartbeat < cutoffTime) {
       delete heartbeatsData.clients[clientId]
       removedCount++
@@ -173,7 +188,7 @@ app.get('/healthz', (req, res) => {
   const now = new Date()
   const activeClients = Object.values(heartbeatsData.clients).filter(client => {
     const lastHeartbeat = new Date(client.lastHeartbeat)
-    return (now - lastHeartbeat) < 300000 // 5 minutos
+    return (now.getTime() - lastHeartbeat.getTime()) < 300000 // 5 minutos
   }).length
 
   res.json({
