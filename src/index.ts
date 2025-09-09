@@ -41,13 +41,19 @@ async function loadData() {
   try {
     const data = await readFile(DATA_FILE, 'utf8');
     monitorData = JSON.parse(data);
+    console.log('Datos cargados correctamente');
   } catch (error) {
+    console.log('Creando nuevo archivo de datos');
     await saveData();
   }
 }
 
 async function saveData() {
-  await writeFile(DATA_FILE, JSON.stringify(monitorData, null, 2));
+  try {
+    await writeFile(DATA_FILE, JSON.stringify(monitorData, null, 2));
+  } catch (error) {
+    console.error('Error guardando datos:', error);
+  }
 }
 
 // Verificar clientes desconectados
@@ -79,63 +85,81 @@ function checkDisconnectedClients() {
 // Middleware
 app.use(express.json());
 
-// Endpoint para heartbeats
+// ✅ ENDPOINT HEARTBEAT CORREGIDO (POST)
 app.post('/api/heartbeat', async (req: Request, res: Response) => {
-  const { clientId, timestamp, bootTime, isReboot, isFirstRun, hostname } = req.body;
-  const now = new Date();
+  try {
+    const { clientId, timestamp, bootTime, isReboot, isFirstRun, hostname } = req.body;
+    const now = new Date();
 
-  if (!clientId) {
-    return res.status(400).json({ error: 'clientId required' });
-  }
+    if (!clientId) {
+      return res.status(400).json({ error: 'clientId is required' });
+    }
 
-  const clientKey = clientId as string;
+    console.log(`💓 Heartbeat recibido de: ${clientId}`);
 
-  // Verificar reinicio
-  if (isReboot && monitorData.clients[clientKey]) {
-    const event: PowerEvent = {
-      id: `event_${Date.now()}`,
-      type: 'reboot',
-      timestamp: now.toISOString(),
-      clientId: clientKey,
-      hostname: hostname,
-      details: `Reinicio del servidor - ${hostname || clientKey}`
+    const clientKey = clientId as string;
+
+    // Verificar reinicio
+    if (isReboot && monitorData.clients[clientKey]) {
+      const event: PowerEvent = {
+        id: `event_${Date.now()}`,
+        type: 'reboot',
+        timestamp: now.toISOString(),
+        clientId: clientKey,
+        hostname: hostname,
+        details: `Reinicio del servidor - ${hostname || clientKey}`
+      };
+      monitorData.events.push(event);
+      console.log(`🔌 Reinicio detectado: ${clientKey}`);
+    }
+
+    // Verificar reconexión
+    const existingClient = monitorData.clients[clientKey];
+    if (existingClient && existingClient.status === 'disconnected') {
+      const lastSeen = new Date(existingClient.lastSeen);
+      const downtime = Math.floor((now.getTime() - lastSeen.getTime()) / 1000);
+      
+      const event: PowerEvent = {
+        id: `event_${Date.now()}`,
+        type: 'reconnection',
+        timestamp: now.toISOString(),
+        duration: downtime,
+        clientId: clientKey,
+        hostname: hostname,
+        details: `Reconexión después de ${downtime} segundos - ${hostname || clientKey}`
+      };
+      monitorData.events.push(event);
+      console.log(`✅ Reconexión: ${clientKey} después de ${downtime}s`);
+    }
+
+    // Actualizar cliente
+    monitorData.clients[clientKey] = {
+      lastSeen: now.toISOString(),
+      bootTime: bootTime || now.toISOString(),
+      status: 'connected',
+      hostname: hostname
     };
-    monitorData.events.push(event);
-    console.log(`🔌 Reinicio detectado: ${clientKey}`);
-  }
 
-  // Verificar reconexión
-  const existingClient = monitorData.clients[clientKey];
-  if (existingClient && existingClient.status === 'disconnected') {
-    const lastSeen = new Date(existingClient.lastSeen);
-    const downtime = Math.floor((now.getTime() - lastSeen.getTime()) / 1000);
+    await saveData();
     
-    const event: PowerEvent = {
-      id: `event_${Date.now()}`,
-      type: 'reconnection',
-      timestamp: now.toISOString(),
-      duration: downtime,
-      clientId: clientKey,
-      hostname: hostname,
-      details: `Reconexión después de ${downtime} segundos - ${hostname || clientKey}`
-    };
-    monitorData.events.push(event);
-    console.log(`✅ Reconexión: ${clientKey} después de ${downtime}s`);
+    res.json({ 
+      status: 'ok', 
+      received: timestamp,
+      message: 'Heartbeat processed successfully'
+    });
+
+  } catch (error) {
+    console.error('Error en heartbeat:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  // Actualizar cliente
-  monitorData.clients[clientKey] = {
-    lastSeen: now.toISOString(),
-    bootTime: bootTime || now.toISOString(),
-    status: 'connected',
-    hostname: hostname
-  };
-
-  await saveData();
-  res.json({ status: 'ok', received: timestamp });
 });
 
-// Dashboard principal
+// ✅ ENDPOINT STATUS (GET)
+app.get('/api/status', (req: Request, res: Response) => {
+  res.json(monitorData);
+});
+
+// ✅ ENDPOINT PRINCIPAL - DASHBOARD (GET)
 app.get('/', (req: Request, res: Response) => {
   const now = new Date();
   const activeClients = Object.values(monitorData.clients).filter(client => 
@@ -252,9 +276,14 @@ app.get('/', (req: Request, res: Response) => {
   `);
 });
 
-// Endpoint para datos JSON
-app.get('/api/status', (req: Request, res: Response) => {
-  res.json(monitorData);
+// ✅ HEALTH CHECK (GET)
+app.get('/health', (req: Request, res: Response) => {
+  res.json({ 
+    status: 'healthy', 
+    timestamp: new Date().toISOString(),
+    clients: Object.keys(monitorData.clients).length,
+    events: monitorData.events.length
+  });
 });
 
 // Inicializar
