@@ -12,12 +12,13 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "redis": "^4.6.0",
+    "@upstash/redis": "^1.22.0",
     "dotenv": "^16.3.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@types/upstash__redis": "^1.0.3",
     "typescript": "^5.0.0",
     "ts-node": "^10.9.0"
   },

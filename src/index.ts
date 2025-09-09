@@ -1,14 +1,17 @@
 import express, { Request, Response } from 'express';
-import { Redis } from '@upstash/redis';
+import { Redis } from '@upstash/redis'; // ✅ Cambiado a @upstash/redis
+import dotenv from 'dotenv';
+
+// Cargar variables de entorno
+dotenv.config();
 
 const app = express();
 
-// Configura Redis (usa variables de entorno en Vercel)
+// Configurar Redis con @upstash/redis ✅
 const redis = new Redis({
-  url: process.env.REDIS_URL || 'your_redis_url_here',
-  token: process.env.REDIS_TOKEN || 'your_redis_token_here',
+  url: process.env.UPSTASH_REDIS_REST_URL || process.env.REDIS_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN || process.env.REDIS_PASSWORD,
 });
-
 interface PowerEvent {
   id: string;
   type: 'outage' | 'reconnection' | 'reboot' | 'disconnection';
