@@ -1,7 +1,7 @@
 {
   "name": "power-monitor-api",
   "version": "1.0.0",
-  "description": "API de monitoreo de apagones con Redis para detección de apagones domésticos",
+  "description": "Sistema de monitoreo de apagones domésticos con Raspberry Pi",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "@upstash/redis": "^1.22.0",
+    "redis": "^4.6.0",
     "dotenv": "^16.3.0"
   },
   "devDependencies": {
@@ -29,7 +29,7 @@
     "express",
     "vercel"
   ],
-  "author": "Tu Nombre",
+  "author": "Adonis",
   "license": "MIT",
   "repository": {
     "type": "git",
